@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/astrogo/fitsio"
+	"github.com/rickbassham/fitsrename/common"
+	"github.com/rickbassham/fitsrename/fits"
+	"github.com/rickbassham/fitsrename/xisf"
 	"github.com/yargevad/filepathx"
 )
 
@@ -59,8 +61,9 @@ var (
 
 	suffix = flag.String("suffix", "%03d", "What to append to the end of the file. It will be sent to fmt.Sprintf with the file number for the current directory.")
 
-	dryRun   = flag.Bool("dry-run", false, "Don't actually rename the files, just print what we would do.")
-	defaults = defaultMap{}
+	dryRun    = flag.Bool("dry-run", false, "Don't actually rename the files, just print what we would do.")
+	defaults  = defaultMap{}
+	overrides = defaultMap{}
 
 	ignoreWarnings = flag.Bool("ignore-warnings", false, "Ignore checks that protect you from deleting data. Dangerous.")
 
@@ -116,28 +119,26 @@ func convertUInt(n interface{}) uint64 {
 	return 0
 }
 
-func (t token) convert(hdr *fitsio.Header) string {
+func (t token) convert(hdr common.Header) string {
 	if t.raw {
 		return t.header
 	}
 
-	var val fitsio.Value
-
-	card := hdr.Get(t.header)
-	if card == nil || card.Value == nil {
+	val, ok := hdr[t.header]
+	if !ok || val == nil {
 		val = defaults[t.header]
-	} else {
-		val = card.Value
+	}
+
+	if or, ok := overrides[t.header]; ok {
+		val = or
 	}
 
 	if val == nil || val == "" {
 		if as, ok := aliases[t.header]; ok {
 			for _, a := range as {
-				card := hdr.Get(a)
-				if card == nil || card.Value == nil {
+				val, ok := hdr[a]
+				if !ok || val == nil {
 					val = defaults[a]
-				} else {
-					val = card.Value
 				}
 
 				if val != nil {
@@ -170,7 +171,7 @@ func (t token) convert(hdr *fitsio.Header) string {
 			return parsed.Format(t.format[4:])
 		}
 
-		return val
+		return strings.TrimSpace(val)
 
 	case bool:
 		if t.format == "" {
@@ -280,25 +281,33 @@ func handleFile(tokensByType map[string][]token, file string) {
 		log.Println(fmt.Sprintf("processing file %s", file))
 	}
 
+	if strings.HasPrefix(filepath.Base(file), ".") {
+		log.Println(fmt.Sprintf("skipping dotfile %s", file))
+		return
+	}
+
 	f, err := os.Open(file)
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
 	defer f.Close()
 
-	fit, err := fitsio.Open(f)
-	if err != nil {
-		log.Fatalln(err.Error())
-	}
-	defer fit.Close()
+	var hdr common.Header
 
-	hdr := fit.HDU(0).Header()
+	if strings.HasSuffix(file, ".xisf") {
+		hdr, err = xisf.NewDecoder(f).ReadHeader()
+		if err != nil {
+			log.Fatalln(err.Error())
+		}
+	} else if strings.HasSuffix(file, ".fits") {
+		hdr, err = fits.NewDecoder(f).ReadHeader()
+		if err != nil {
+			log.Fatalln(err.Error())
+		}
+	}
 
 	if *debug {
-		keys := hdr.Keys()
-
-		for _, key := range keys {
-			v := hdr.Get(key).Value
+		for key, v := range hdr {
 			switch val := v.(type) {
 			case string:
 				println(fmt.Sprintf("%-10s %s", key, val))
@@ -315,19 +324,25 @@ func handleFile(tokensByType map[string][]token, file string) {
 		}
 	}
 
-	t := hdr.Get("IMAGETYP")
-	if t == nil || t.Value == nil {
-		t = hdr.Get("FRAME")
+	var ok bool
+
+	t, ok := hdr["IMAGETYP"]
+	if !ok || t == nil {
+		t, ok = hdr["FRAME"]
+
+		if !ok {
+			log.Println(fmt.Sprintf("missing IMAGETYP and FRAME header; skipping file %s", file))
+			return
+		}
 	}
 
-	if t == nil || t.Value == nil {
+	if t == nil {
 		log.Println(fmt.Sprintf("missing IMAGETYP and FRAME header; skipping file %s", file))
 		return
 	}
 
-	var ok bool
 	var imgType string
-	if imgType, ok = t.Value.(string); !ok {
+	if imgType, ok = t.(string); !ok {
 		log.Println(fmt.Sprintf("IMAGETYP or FRAME header is not a string value; skipping file %s", file))
 		return
 	}
@@ -399,6 +414,7 @@ func handleFile(tokensByType map[string][]token, file string) {
 
 func main() {
 	flag.Var(defaults, "defaults", "Specifies default values to use if a FITS header is missing. Ex: FILTER=RGB;OBS=Me")
+	flag.Var(overrides, "overrides", "Specifies values to override in a FITS header. Ex: FILTER=RGB;OBS=Me")
 
 	flag.Parse()
 
