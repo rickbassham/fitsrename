@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -59,13 +60,15 @@ var (
 
 	suffix = flag.String("suffix", "%03d", "What to append to the end of the file. It will be sent to fmt.Sprintf with the file number for the current directory.")
 
+	overwrite = flag.Bool("overwrite", false, "Overwrite existing files. Dangerous.")
+
 	dryRun   = flag.Bool("dry-run", false, "Don't actually rename the files, just print what we would do.")
 	defaults = defaultMap{}
 
 	ignoreWarnings = flag.Bool("ignore-warnings", false, "Ignore checks that protect you from deleting data. Dangerous.")
 
 	aliases = map[string][]string{
-		"EXPTIME": []string{"EXPOSURE"},
+		"EXPTIME": {"EXPOSURE"},
 	}
 
 	checkSuffix  = regexp.MustCompile(`%\d*d`)
@@ -209,6 +212,10 @@ func (t token) convert(hdr *fitsio.Header) string {
 			return fmt.Sprintf("%f", val)
 		}
 
+		if strings.HasPrefix(t.format, "round") {
+			return fmt.Sprintf("%d", 5*int64(math.Round(float64(val)/5)))
+		}
+
 		if strings.Index(t.format, "d") > 0 {
 			return fmt.Sprintf(t.format, int64(val))
 		}
@@ -218,6 +225,10 @@ func (t token) convert(hdr *fitsio.Header) string {
 	case float64:
 		if t.format == "" {
 			return fmt.Sprintf("%f", val)
+		}
+
+		if strings.HasPrefix(t.format, "round") {
+			return fmt.Sprintf("%d", 5*int64(math.Round(val/5)))
 		}
 
 		if strings.Index(t.format, "d") > 0 {
@@ -388,6 +399,17 @@ func handleFile(tokensByType map[string][]token, file string) {
 		err = os.MkdirAll(path.Dir(newName), perm)
 		if err != nil && !os.IsExist(err) {
 			log.Fatalln(fmt.Sprintf("error renaming %s to %s; %s", file, newName, err.Error()))
+		}
+
+		exists := true
+
+		if _, err = os.Stat(newName); os.IsNotExist(err) {
+			exists = false
+		}
+
+		if exists && !*overwrite {
+			log.Println(fmt.Sprintf("destination %s already exists; skipping %s", newName, file))
+			return
 		}
 
 		err = os.Rename(file, newName)
