@@ -309,7 +309,7 @@ func handleFile(tokensByType map[string][]token, file string) {
 		if err != nil {
 			log.Fatalln(err.Error())
 		}
-	} else if strings.HasSuffix(file, ".fits") {
+	} else if strings.HasSuffix(file, ".fits") || strings.HasSuffix(file, ".fit") {
 		hdr, err = fits.NewDecoder(f).ReadHeader()
 		if err != nil {
 			log.Fatalln(err.Error())
